@@ -1,0 +1,16 @@
+[Unit]
+Description=bot_master multi-bot runner
+After=network.target
+
+[Service]
+Type=simple
+User=bot
+Group=bot
+WorkingDirectory=/opt/bot_master
+EnvironmentFile=/opt/bot_master/.env
+ExecStart=/opt/bot_master/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

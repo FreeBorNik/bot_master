@@ -1,0 +1,9 @@
+aiogram==3.13.1
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+aiofiles==24.1.0
+reportlab==4.2.5
+cryptography>=42.0.0
+
+# Календарь (конфликт aiohttp с Python 3.12 — ставить отдельно без зависимостей):
+# pip install aiogram3-calendar==0.1.2 --no-deps

@@ -1,0 +1,149 @@
+# ПРОЕКТ: bot_master — multi-bot runner для Telegram child-ботов
+
+## НАЗНАЧЕНИЕ
+
+Один Python-процесс запускает N идентичных child-ботов (раньше — 20 отдельных процессов `bot_women_wow`).
+Реестр ботов читается **read-only** из БД проекта `bot_sender` (таблица `recipient_bots`).
+Рассылки и упаковка контента — отдельный процесс `bot_sender`, его не объединяем с bot_master.
+
+## СВЯЗАННЫЕ ПРОЕКТЫ
+
+| Проект | Путь (локально) | GitHub | Роль |
+|--------|-----------------|--------|------|
+| **bot_master** | `d:\cursor_prj\bot_master` | `FreeBorNik/bot_master` | Multi-bot runner, polling всех child-ботов |
+| **bot_sender** | `d:\cursor_prj\bot_sender` | `FreeBorNik/bot_sender` | Оркестратор: рассылки, упаковка, реестр `recipient_bots` |
+| **bot_women_wow** | `d:\cursor_prj\bot_women_wow` | `FreeBorNik/bot_women_wow` | Шаблон логики одного бота; для локальной разработки single-bot |
+
+Handlers скопированы из `bot_women_wow`. Изменения бизнес-логики бота — сначала в `bot_women_wow`, затем перенос в `bot_master`.
+
+## ТЕХНОЛОГИИ
+
+- Python 3.10+
+- aiogram 3.13.1, Router, FSM
+- aiosqlite — отдельный SQLite-файл на каждый child-бот
+- python-dotenv, cryptography (Fernet — расшифровка токенов bot_sender)
+- reportlab, aiogram3-calendar (ставить: `pip install aiogram3-calendar==0.1.2 --no-deps`)
+
+## АРХИТЕКТУРА
+
+```
+bot_master/
+├── .env                    # SENDER_DB_PATH, RECIPIENTS_DB_DIR и т.д. (НЕ коммитить!)
+├── .cursorrules
+├── .env.example
+├── requirements.txt
+├── run.bat
+├── DEPLOY.md
+├── deploy/bot_master.service
+└── bot/
+    ├── main.py             # Точка входа: multi-polling
+    ├── config.py           # RunnerConfig (env runner'а)
+    ├── registry/           # Загрузка ботов из bot_sender.db
+    │   ├── models.py       # BotInstance
+    │   ├── loader.py       # BotRegistry.load()
+    │   └── crypto.py       # TokenDecryptor (read-only)
+    ├── middlewares/
+    │   ├── database.py     # MultiDatabaseMiddleware (bot.id → Database)
+    │   ├── admin.py        # AdminMiddleware (таблица admins в child DB)
+    │   ├── action_logger.py
+    │   └── bot_label.py    # Префикс логов [bot_name]
+    ├── handlers/           # common, user, admin routers (из bot_women_wow)
+    ├── services/           # mailing, scheduler, subscription, statistics
+    ├── database/           # db, migrations, repositories
+    ├── states/
+    ├── keyboards/
+    └── utils/
+```
+
+### Поток данных
+
+1. Старт → `RunnerConfig.validate()` → `BotRegistry.load()` из `recipient_bots WHERE is_active=1`
+2. Для каждого бота: расшифровка токена, `Database(child_db_path)`, `create_tables()`, `MailingScheduler`
+3. Один `Dispatcher` + `MemoryStorage(DefaultKeyBuilder(with_bot_id=True))` — изоляция FSM по bot_id
+4. `dp.start_polling(*bots)` — все child-боты в одном event loop
+5. `MultiDatabaseMiddleware` кладёт `data["db"]` по `bot.id`
+
+### Что НЕ хранится в bot_master
+
+- Токены child-ботов — в `bot_sender.db` (зашифрованы Fernet)
+- Child SQLite — в `bot_sender/data/recipients/` (пути в `recipient_bots.db_path`)
+- Ключ шифрования — `bot_sender/data/encryption.key`
+
+## КОНФИГУРАЦИЯ (.env)
+
+```env
+SENDER_DB_PATH=/path/to/bot_sender/data/bot_sender.db
+SENDER_ENCRYPTION_KEY=/path/to/bot_sender/data/encryption.key
+RECIPIENTS_DB_DIR=/path/to/bot_sender/data/recipients/
+LOG_LEVEL=INFO
+LOG_FILE=logs/bot_master.log
+MAILING_DELAY=0.05
+```
+
+**Нет** `BOT_TOKEN` / `ADMIN_IDS` в env runner'а. Админы — таблица `admins` в child SQLite каждого бота.
+
+## КЛЮЧЕВЫЕ ПРАВИЛА РАЗРАБОТКИ
+
+### Multi-bot
+
+- Не использовать глобальный singleton `Config` с одним токеном/БД
+- Handlers получают `db: Database` и `bot: Bot` через middleware/DI — не менять сигнатуры без необходимости
+- FSM всегда с `with_bot_id=True`
+- Новый child-бот: регистрация в bot_sender → restart bot_master
+- **Нельзя** два polling на один токен (конфликт getUpdates)
+
+### Стиль кода
+
+- async/await, type hints (PEP 484)
+- snake_case / PascalCase / UPPER_SNAKE_CASE
+- Минимальный diff, без over-engineering
+- Комментарии только для неочевидной логики
+- Отвечать на русском, конкретные решения под проект
+
+### Изменения middleware
+
+| Middleware | Ответственность |
+|------------|-----------------|
+| `BotLabelMiddleware` | contextvar для логов |
+| `MultiDatabaseMiddleware` | `data["db"]` по telegram `bot.id` |
+| `ActionLoggerMiddleware` | логи действий, `db` из data |
+| `AdminMiddleware` | `SELECT user_id FROM admins`, кэш по db_path |
+
+### SQLite
+
+- WAL + `busy_timeout=5000` в `Database.connect()`
+- Отдельный файл на бота, колонку `bot_id` в таблицы не добавляем
+
+## ЗАПУСК (новый ПК)
+
+```bash
+git clone https://github.com/FreeBorNik/bot_master.git
+cd bot_master
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+pip install aiogram3-calendar==0.1.2 --no-deps
+copy .env.example .env          # указать пути к bot_sender
+python -m bot.main
+```
+
+Нужен доступ к `bot_sender/data/` (bot_sender.db, encryption.key, recipients/*.db).
+
+## ДЕПЛОЙ
+
+См. `DEPLOY.md`. systemd unit: `deploy/bot_master.service`.
+На сервере: 2 процесса — `bot_master` + `bot_sender` (вместо 21).
+
+## v1 — НЕ ДЕЛАЕМ без явного запроса
+
+- Hot-reload списка ботов без рестарта
+- Объединение bot_sender и bot_master в один процесс
+- Общая БД с `bot_id` вместо отдельных SQLite
+- Изменения схемы `bot_sender` (только read-only доступ)
+
+## ПРИОРИТЕТЫ
+
+1. Изоляция ботов (FSM, DB, admin per child)
+2. Стабильность (один упавший бот при load — skip, остальные работают)
+3. Совместимость с bot_sender (пути db_path, encryption.key)
+4. Минимальные изменения в handlers при доработках

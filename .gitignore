@@ -1,0 +1,48 @@
+# Секреты и локальная конфигурация
+.env
+.env.local
+*.key
+encryption.key
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Логи и runtime-данные
+logs/
+*.log
+
+# SQLite (child-боты хранятся в bot_sender, не в репозитории)
+*.db
+*.db-wal
+*.db-shm
+
+# IDE и OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Тесты и coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Cursor (локальные настройки сессии; .cursorrules коммитим)
+.cursor/
