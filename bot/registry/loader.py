@@ -24,6 +24,11 @@ def _resolve_child_db_path(stored_path: str) -> Path:
     path = Path(stored_path)
     if path.is_absolute():
         return path
+    if not RunnerConfig.RECIPIENTS_DB_DIR:
+        raise ValueError(
+            f"Относительный db_path '{stored_path}' в recipient_bots: "
+            "укажите RECIPIENTS_DB_DIR в .env"
+        )
     return RunnerConfig.RECIPIENTS_DB_DIR / path
 
 
@@ -77,7 +82,16 @@ class BotRegistry:
     ) -> Optional[BotInstance]:
         registry_id = row["id"]
         name = row["bot_name"]
-        db_path = _resolve_child_db_path(row["db_path"])
+        try:
+            db_path = _resolve_child_db_path(row["db_path"])
+        except ValueError as exc:
+            logger.error(
+                "Бот %s (id=%s): %s",
+                name,
+                registry_id,
+                exc,
+            )
+            return None
 
         if not db_path.exists():
             logger.error(

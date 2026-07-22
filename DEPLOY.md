@@ -29,7 +29,7 @@ cp .env.example .env
 |------------|----------|
 | `SENDER_DB_PATH` | Абсолютный путь к `bot_sender.db` |
 | `SENDER_ENCRYPTION_KEY` | Абсолютный путь к `encryption.key` |
-| `RECIPIENTS_DB_DIR` | Директория child SQLite (обычно `bot_sender/data/recipients/`) |
+| `RECIPIENTS_DB_DIR` | Опционально: база для относительных `db_path` в `recipient_bots` |
 | `LOG_LEVEL` | INFO / DEBUG |
 | `LOG_FILE` | Путь к файлу логов |
 | `MAILING_DELAY` | Задержка локальных рассылок (сек) |

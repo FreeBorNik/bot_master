@@ -9,7 +9,6 @@ if __package__ is None or __package__ == "":
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.exceptions import TelegramAPIError
-from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.strategy import FSMStrategy
 from aiogram.types import ErrorEvent
@@ -87,9 +86,7 @@ async def main() -> None:
 
         _print_healthcheck(instances, db_map)
 
-        storage = MemoryStorage(
-            key_builder=DefaultKeyBuilder(with_bot_id=True),
-        )
+        storage = MemoryStorage()
         dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.CHAT)
 
         errors_router = Router(name="errors")
