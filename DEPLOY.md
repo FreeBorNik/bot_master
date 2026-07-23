@@ -33,6 +33,9 @@ cp .env.example .env
 | `LOG_LEVEL` | INFO / DEBUG |
 | `LOG_FILE` | Путь к файлу логов |
 | `MAILING_DELAY` | Задержка локальных рассылок (сек) |
+| `CONTROL_BOT_TOKEN` | Опционально: токен control bot для мониторинга |
+| `CONTROL_ADMIN_IDS` | Telegram user_id админов control bot (через запятую) |
+| `CONTROL_STATUS_INTERVAL` | Интервал проверки статуса, сек (0 = без авто-проверки, default 300) |
 
 ## Запуск
 

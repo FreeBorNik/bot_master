@@ -94,7 +94,14 @@ from aiogram3_calendar.calendar_types import (
     SimpleCalendarAction,
     SimpleCalendarCallback,
 )
-from bot.utils.helpers import parse_entities_from_json, apply_welcome_placeholders, entities_to_html, resolve_button_url
+from bot.utils.helpers import (
+    apply_welcome_placeholders,
+    entities_to_html,
+    extract_entities_json_from_message,
+    message_entities_to_json,
+    parse_entities_from_json,
+    resolve_button_url,
+)
 from bot.utils.logger import setup_logger
 from bot.handlers.user_router import send_chain_message, _send_media_with_text
 
@@ -359,23 +366,9 @@ async def admin_start_message_edit_text(message: Message, state: FSMContext, db:
         return
     
     text = message.text or ""
-    entities_json = None
-    
-    # Получаем entities
-    entities = message.entities or []
-    if entities:
-        entities_list = []
-        for entity in entities:
-            entity_dict = {
-                "type": entity.type,
-                "offset": entity.offset,
-                "length": entity.length
-            }
-            if entity.type == "text_link":
-                entity_dict["url"] = entity.url
-            entities_list.append(entity_dict)
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
-        logger.info(f"Сохранено {len(entities_list)} entities для сообщения после /start")
+    entities_json = extract_entities_json_from_message(message)
+    if entities_json:
+        logger.info("Сохранено entities для сообщения после /start")
     
     start_repo = StartMessageRepository(db)
     await start_repo.create_or_update_start_message(text, entities_json)
@@ -576,25 +569,9 @@ async def admin_welcome_edit_text(message: Message, state: FSMContext, db: Datab
     
     # Сохранение текста и entities
     text = message.text or message.caption or ""
-    entities_json = None
-    
-    # Получаем entities из message.entities или message.caption_entities
-    entities = message.entities or message.caption_entities or []
-    
-    if entities:
-        entities_list = []
-        for entity in entities:
-            entity_dict = {
-                "type": entity.type,
-                "offset": entity.offset,
-                "length": entity.length
-            }
-            # Для text_link сохраняем URL
-            if entity.type == "text_link":
-                entity_dict["url"] = entity.url
-            entities_list.append(entity_dict)
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
-        logger.info(f"Сохранено {len(entities_list)} entities для приветственного сообщения")
+    entities_json = extract_entities_json_from_message(message)
+    if entities_json:
+        logger.info("Сохранено entities для приветственного сообщения")
     
     # Сохранение в БД
     welcome_repo = WelcomeMessageRepository(db)
@@ -804,11 +781,7 @@ async def admin_simple_welcome_edit_text(message: Message, state: FSMContext, db
         await message.answer("❌ Отменено.", reply_markup=get_admin_main_keyboard(), disable_web_page_preview=True)
         return
     text = (message.text or "").strip() or "Добро пожаловать!"
-    entities = message.entities or []
-    entities_json = None
-    if entities:
-        entities_list = [{"type": e.type, "offset": e.offset, "length": e.length, **({"url": e.url} if getattr(e, "url", None) else {})} for e in entities]
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
+    entities_json = message_entities_to_json(message.entities or [])
     repo = SimpleWelcomeMessageRepository(db)
     await repo.create_or_update(text, entities_json)
     await state.clear()
@@ -895,19 +868,7 @@ async def admin_no_questionnaire_edit_text(message: Message, state: FSMContext, 
         await message.answer("❌ Отменено.", reply_markup=get_admin_main_keyboard(), disable_web_page_preview=True)
         return
     text = (message.text or "").strip() or "Добро пожаловать!"
-    entities = message.entities or []
-    entities_json = None
-    if entities:
-        entities_list = [
-            {
-                "type": e.type,
-                "offset": e.offset,
-                "length": e.length,
-                **({"url": e.url} if getattr(e, "url", None) else {}),
-            }
-            for e in entities
-        ]
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
+    entities_json = message_entities_to_json(message.entities or [])
     repo = NoQuestionnaireMessageRepository(db)
     await repo.create_or_update(text, entities_json)
     await state.clear()
@@ -979,11 +940,7 @@ async def admin_channels_list_edit_text(message: Message, state: FSMContext, db:
         await message.answer("❌ Отменено.", reply_markup=get_admin_main_keyboard(), disable_web_page_preview=True)
         return
     text = (message.text or "").strip() or "Подпишитесь на наши каналы:\n\n{channels_list}"
-    entities = message.entities or []
-    entities_json = None
-    if entities:
-        entities_list = [{"type": e.type, "offset": e.offset, "length": e.length, **({"url": e.url} if getattr(e, "url", None) else {})} for e in entities]
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
+    entities_json = message_entities_to_json(message.entities or [])
     repo = ChannelsListMessageRepository(db)
     await repo.create_or_update(text, entities_json)
     await state.clear()
@@ -1205,16 +1162,7 @@ async def admin_post_questionnaire_edit_text(message: Message, state: FSMContext
         return
     
     text = message.text or message.caption or ""
-    entities_json = None
-    entities = message.entities or message.caption_entities or []
-    if entities:
-        entities_list = []
-        for entity in entities:
-            entity_dict = {"type": entity.type, "offset": entity.offset, "length": entity.length}
-            if entity.type == "text_link":
-                entity_dict["url"] = entity.url
-            entities_list.append(entity_dict)
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
+    entities_json = extract_entities_json_from_message(message)
     
     media_type = None
     media_file_id = None
@@ -1277,15 +1225,11 @@ async def admin_post_questionnaire_edit_media(message: Message, state: FSMContex
     if media_type:
         await state.update_data(media_type=media_type, media_file_id=media_file_id)
         if message.caption:
-            entities = message.caption_entities or []
-            entities_list = []
-            for entity in entities:
-                entity_dict = {"type": entity.type, "offset": entity.offset, "length": entity.length}
-                if entity.type == "text_link":
-                    entity_dict["url"] = entity.url
-                entities_list.append(entity_dict)
-            await state.update_data(text=message.caption, entities_json=json.dumps(entities_list, ensure_ascii=False))
-        
+            await state.update_data(
+                text=message.caption,
+                entities_json=message_entities_to_json(message.caption_entities or []),
+            )
+
         await state.set_state(PostQuestionnaireMessageStates.waiting_for_buttons)
         await message.answer(
             "✅ Медиа сохранено.\n\nОтправьте кнопки в формате: <code>Текст:ссылка</code> или /skip.",
@@ -1811,22 +1755,7 @@ async def admin_chain_edit_text(message: Message, state: FSMContext, db: Databas
         return
     
     text = message.text or message.caption or ""
-    entities_json = None
-    
-    # Получаем entities
-    entities = message.entities or message.caption_entities or []
-    if entities:
-        entities_list = []
-        for entity in entities:
-            entity_dict = {
-                "type": entity.type,
-                "offset": entity.offset,
-                "length": entity.length
-            }
-            if entity.type == "text_link":
-                entity_dict["url"] = entity.url
-            entities_list.append(entity_dict)
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
+    entities_json = extract_entities_json_from_message(message)
     
     # Проверяем медиа
     media_type = None
@@ -1902,21 +1831,10 @@ async def admin_chain_edit_media(message: Message, state: FSMContext, db: Databa
     await state.update_data(media_type=media_type, media_file_id=media_file_id)
     
     if message.caption:
-        entities_json = None
-        entities = message.caption_entities or []
-        if entities:
-            entities_list = []
-            for entity in entities:
-                entity_dict = {
-                    "type": entity.type,
-                    "offset": entity.offset,
-                    "length": entity.length
-                }
-                if entity.type == "text_link":
-                    entity_dict["url"] = entity.url
-                entities_list.append(entity_dict)
-            entities_json = json.dumps(entities_list, ensure_ascii=False)
-        await state.update_data(text=message.caption, entities_json=entities_json)
+        await state.update_data(
+            text=message.caption,
+            entities_json=message_entities_to_json(message.caption_entities or []),
+        )
     
     await state.set_state(ChainMessageStates.waiting_for_buttons)
     await message.answer(
@@ -2681,22 +2599,7 @@ async def admin_message_create_text(message: Message, state: FSMContext, db: Dat
         entities_json = None
     else:
         text = message.text or message.caption or ""
-        entities_json = None
-        
-        # Сохраняем entities
-        entities = message.entities or message.caption_entities or []
-        if entities:
-            entities_list = []
-            for entity in entities:
-                entity_dict = {
-                    "type": entity.type,
-                    "offset": entity.offset,
-                    "length": entity.length
-                }
-                if entity.type == "text_link":
-                    entity_dict["url"] = entity.url
-                entities_list.append(entity_dict)
-            entities_json = json.dumps(entities_list, ensure_ascii=False)
+        entities_json = extract_entities_json_from_message(message)
     
     # Проверяем наличие медиа в первом сообщении
     media_type = None
@@ -2784,26 +2687,11 @@ async def admin_message_create_media(message: Message, state: FSMContext, db: Da
         
         # Если есть подпись к медиа, обновляем текст
         if message.caption:
-            entities_json = None
-            entities = message.caption_entities or []
-            if entities:
-                entities_list = []
-                for entity in entities:
-                    entity_dict = {
-                        "type": entity.type,
-                        "offset": entity.offset,
-                        "length": entity.length
-                    }
-                    if entity.type == "text_link":
-                        entity_dict["url"] = entity.url
-                    entities_list.append(entity_dict)
-                entities_json = json.dumps(entities_list, ensure_ascii=False)
-            
             await state.update_data(
                 text=message.caption,
-                entities_json=entities_json
+                entities_json=extract_entities_json_from_message(message),
             )
-        
+
         await state.set_state(MailingMessageStates.waiting_for_buttons)
         await message.answer(
             f"✅ <b>Шаг 2/3 завершен:</b> Медиа сохранено ({media_type}).\n\n"
@@ -3006,26 +2894,11 @@ async def admin_message_forward_process(message: Message, state: FSMContext, db:
     
     # Извлекаем данные из пересланного сообщения
     text = message.text or message.caption or ""
-    entities_json = None
+    entities_json = extract_entities_json_from_message(message)
     media_type = None
     media_file_id = None
     buttons_json = None
-    
-    # Сохраняем entities
-    entities = message.entities or message.caption_entities or []
-    if entities:
-        entities_list = []
-        for entity in entities:
-            entity_dict = {
-                "type": entity.type,
-                "offset": entity.offset,
-                "length": entity.length
-            }
-            if entity.type == "text_link":
-                entity_dict["url"] = entity.url
-            entities_list.append(entity_dict)
-        entities_json = json.dumps(entities_list, ensure_ascii=False)
-    
+
     # Проверяем медиа
     if message.photo:
         media_type = "photo"

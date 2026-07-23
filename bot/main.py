@@ -1,36 +1,49 @@
 """Точка входа multi-bot runner."""
 import asyncio
 import logging
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from aiogram import Bot, Dispatcher, Router
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.strategy import FSMStrategy
 from aiogram.types import ErrorEvent
 
+try:
+    from aiogram.client.default import DefaultBotProperties
+except ModuleNotFoundError:
+    DefaultBotProperties = None  # aiogram < 3.2
+
 from bot.config import RunnerConfig
 from bot.database.db import Database
 from bot.database.migrations import create_tables
 from bot.database.repositories import UserRepository
-from bot.handlers import admin_router, common_router, user_router
+from bot.handlers import admin_router, common_router, control_router, user_router
 from bot.middlewares.action_logger import ActionLoggerMiddleware
 from bot.middlewares.admin import AdminMiddleware
 from bot.middlewares.bot_label import BotLabelMiddleware
+from bot.middlewares.control_admin import ControlAdminMiddleware
+from bot.middlewares.control_data import ControlDataMiddleware
 from bot.middlewares.database import MultiDatabaseMiddleware
 from bot.registry import BotRegistry
 from bot.registry.models import BotInstance
+from bot.services.bot_status import BotStatusService
 from bot.services.scheduler import MailingScheduler
 from bot.utils.bot_log_filter import BotContextFilter, BotContextFormatter
+from bot.utils.instance_lock import acquire_instance_lock, release_instance_lock
 from bot.utils.logger import configure_root_logging, setup_logger
 
 logger = setup_logger(__name__)
 
 ALLOWED_UPDATES = ["callback_query", "chat_join_request", "message", "my_chat_member"]
+CONTROL_ALLOWED_UPDATES = ["callback_query", "message"]
 
 
 def _setup_logging() -> None:
@@ -62,11 +75,147 @@ def _print_healthcheck(instances: list[BotInstance], db_map: dict[int, Database]
     print(f"\nВсего активных ботов: {len(instances)}\n")
 
 
+def _create_control_bot() -> Bot:
+    """Создать Bot для control bot."""
+    if DefaultBotProperties is not None:
+        return Bot(
+            token=RunnerConfig.CONTROL_BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+    return Bot(token=RunnerConfig.CONTROL_BOT_TOKEN)
+
+
+def _setup_control_dispatcher(status_service: BotStatusService) -> Dispatcher:
+    """Dispatcher только для control bot (без child handlers)."""
+    dp = Dispatcher(storage=MemoryStorage())
+    admin_ids = set(RunnerConfig.CONTROL_ADMIN_IDS)
+
+    for middleware in (
+        ControlAdminMiddleware(admin_ids),
+        ControlDataMiddleware(status_service),
+    ):
+        dp.message.middleware(middleware)
+        dp.callback_query.middleware(middleware)
+
+    dp.include_router(control_router.router)
+    return dp
+
+
+async def _status_monitor_loop(
+    status_service: BotStatusService,
+    control_bot: Bot,
+    stop_event: asyncio.Event,
+) -> None:
+    """Периодическая проверка и уведомление при изменении статуса."""
+    interval = RunnerConfig.CONTROL_STATUS_INTERVAL
+    if interval <= 0:
+        return
+
+    admin_ids = set(RunnerConfig.CONTROL_ADMIN_IDS)
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        statuses, changed = await status_service.check_all()
+        if not changed:
+            continue
+
+        text = status_service.format_report(statuses, title="⚠️ Изменение статуса")
+        await status_service.notify_admins(control_bot, admin_ids, text)
+
+
+async def _notify_startup(
+    status_service: BotStatusService,
+    control_bot: Bot,
+) -> None:
+    """Уведомить админов о запуске runner."""
+    statuses, _ = await status_service.check_all()
+    text = status_service.format_report(statuses, title="✅ bot_master запущен")
+    await status_service.notify_admins(
+        control_bot,
+        set(RunnerConfig.CONTROL_ADMIN_IDS),
+        text,
+    )
+
+
+async def _stop_dispatcher_polling(dispatcher: Dispatcher | None) -> None:
+    """Корректно остановить polling одного Dispatcher."""
+    if dispatcher is None:
+        return
+    try:
+        await dispatcher.stop_polling()
+    except RuntimeError:
+        pass
+
+
+async def _graceful_shutdown(
+    *,
+    stop_event: asyncio.Event,
+    polling_tasks: list[asyncio.Task],
+    dp: Dispatcher | None,
+    dp_control: Dispatcher | None,
+    schedulers: list[MailingScheduler],
+    db_map: dict[int, Database],
+    instances: list[BotInstance],
+    control_bot: Bot | None,
+) -> None:
+    """Остановить polling, планировщики и закрыть соединения."""
+    stop_event.set()
+    logger.info("Остановка bot_master...")
+
+    await _stop_dispatcher_polling(dp)
+    await _stop_dispatcher_polling(dp_control)
+
+    for task in polling_tasks:
+        if not task.done():
+            task.cancel()
+    if polling_tasks:
+        await asyncio.gather(*polling_tasks, return_exceptions=True)
+
+    for scheduler in schedulers:
+        await scheduler.stop()
+
+    for db in db_map.values():
+        await db.disconnect()
+
+    for inst in instances:
+        with suppress(Exception):
+            await inst.bot.session.close()
+
+    if control_bot is not None:
+        with suppress(Exception):
+            await control_bot.session.close()
+
+    logger.info("bot_master остановлен")
+
+
+def _register_shutdown_signals(shutdown_event: asyncio.Event) -> None:
+    """Единый обработчик SIGINT/SIGTERM (Unix). На Windows — через KeyboardInterrupt."""
+    loop = asyncio.get_running_loop()
+
+    def _request_shutdown() -> None:
+        logger.info("Получен сигнал остановки")
+        shutdown_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _request_shutdown)
+
+
 async def main() -> None:
     """Запуск multi-bot runner."""
     instances: list[BotInstance] = []
     db_map: dict[int, Database] = {}
     schedulers: list[MailingScheduler] = []
+    control_bot: Bot | None = None
+    stop_event = asyncio.Event()
+    shutdown_event = asyncio.Event()
+    polling_tasks: list[asyncio.Task] = []
+    dp: Dispatcher | None = None
+    dp_control: Dispatcher | None = None
 
     try:
         RunnerConfig.validate()
@@ -146,24 +295,88 @@ async def main() -> None:
         dp.include_router(admin_router.router)
 
         bots = [inst.bot for inst in instances]
-        logger.info("bot_master запущен, polling %d ботов", len(bots))
 
-        await dp.start_polling(*bots, allowed_updates=ALLOWED_UPDATES)
+        _register_shutdown_signals(shutdown_event)
 
+        polling_tasks.append(
+            asyncio.create_task(
+                dp.start_polling(
+                    *bots,
+                    allowed_updates=ALLOWED_UPDATES,
+                    handle_signals=False,
+                    close_bot_session=False,
+                ),
+                name="child_polling",
+            )
+        )
+
+        if RunnerConfig.control_bot_enabled():
+            status_service = BotStatusService(instances=instances)
+            control_bot = _create_control_bot()
+            dp_control = _setup_control_dispatcher(status_service)
+
+            await _notify_startup(status_service, control_bot)
+
+            polling_tasks.append(
+                asyncio.create_task(
+                    dp_control.start_polling(
+                        control_bot,
+                        allowed_updates=CONTROL_ALLOWED_UPDATES,
+                        handle_signals=False,
+                        close_bot_session=False,
+                    ),
+                    name="control_polling",
+                )
+            )
+            polling_tasks.append(
+                asyncio.create_task(
+                    _status_monitor_loop(status_service, control_bot, stop_event),
+                    name="status_monitor",
+                )
+            )
+            logger.info("Control bot включён, админов: %d", len(RunnerConfig.CONTROL_ADMIN_IDS))
+
+        logger.info("bot_master запущен, polling %d child-ботов", len(bots))
+
+        shutdown_waiter = asyncio.create_task(shutdown_event.wait(), name="shutdown_waiter")
+        polling_tasks.append(shutdown_waiter)
+
+        done, _ = await asyncio.wait(
+            polling_tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            if task.cancelled():
+                continue
+            with suppress(asyncio.CancelledError):
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+
+    except asyncio.CancelledError:
+        logger.info("Прерывание bot_master (Ctrl+C)")
+        raise
     except Exception as exc:
         logger.error("Критическая ошибка при запуске bot_master: %s", exc, exc_info=True)
         sys.exit(1)
     finally:
-        for scheduler in schedulers:
-            await scheduler.stop()
-        for db in db_map.values():
-            await db.disconnect()
-        for inst in instances:
-            await inst.bot.session.close()
+        await _graceful_shutdown(
+            stop_event=stop_event,
+            polling_tasks=polling_tasks,
+            dp=dp,
+            dp_control=dp_control,
+            schedulers=schedulers,
+            db_map=db_map,
+            instances=instances,
+            control_bot=control_bot,
+        )
 
 
 if __name__ == "__main__":
+    acquire_instance_lock()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("bot_master остановлен пользователем")
+        pass
+    finally:
+        release_instance_lock()

@@ -20,6 +20,19 @@ class RunnerConfig:
     LOG_FILE: Path = Path(os.getenv("LOG_FILE", "logs/bot_master.log"))
     MAILING_DELAY: float = float(os.getenv("MAILING_DELAY", "0.05"))
 
+    CONTROL_BOT_TOKEN: str = os.getenv("CONTROL_BOT_TOKEN", "").strip()
+    _control_admin_ids: str = os.getenv("CONTROL_ADMIN_IDS", "").strip()
+    CONTROL_ADMIN_IDS: frozenset[int] = frozenset(
+        int(x.strip())
+        for x in _control_admin_ids.split(",")
+        if x.strip().isdigit()
+    )
+    CONTROL_STATUS_INTERVAL: int = int(os.getenv("CONTROL_STATUS_INTERVAL", "300"))
+
+    @classmethod
+    def control_bot_enabled(cls) -> bool:
+        return bool(cls.CONTROL_BOT_TOKEN)
+
     @classmethod
     def validate(cls) -> None:
         """Проверка обязательных параметров runner."""
@@ -32,6 +45,12 @@ class RunnerConfig:
             raise ValueError(
                 f"SENDER_ENCRYPTION_KEY не найден: {cls.SENDER_ENCRYPTION_KEY}. "
                 "Укажите путь к encryption.key из bot_sender"
+            )
+
+        if cls.CONTROL_BOT_TOKEN and not cls.CONTROL_ADMIN_IDS:
+            raise ValueError(
+                "CONTROL_BOT_TOKEN задан, но CONTROL_ADMIN_IDS пуст. "
+                "Укажите Telegram user_id админов через запятую."
             )
 
         cls.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
