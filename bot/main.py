@@ -4,6 +4,7 @@ import logging
 import signal
 import sys
 from contextlib import suppress
+from html import escape
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
@@ -33,7 +34,7 @@ from bot.middlewares.control_admin import ControlAdminMiddleware
 from bot.middlewares.control_data import ControlDataMiddleware
 from bot.middlewares.database import MultiDatabaseMiddleware
 from bot.registry import BotRegistry
-from bot.registry.models import BotInstance
+from bot.registry.models import BotInstance, RegistryLoadResult
 from bot.services.bot_status import BotStatusService
 from bot.services.scheduler import MailingScheduler
 from bot.utils.bot_log_filter import BotContextFilter, BotContextFormatter
@@ -125,6 +126,43 @@ async def _status_monitor_loop(
 
         text = status_service.format_report(statuses, title="⚠️ Изменение статуса")
         await status_service.notify_admins(control_bot, admin_ids, text)
+
+
+async def _notify_load_failure(
+    control_bot: Bot,
+    load_result: RegistryLoadResult,
+) -> None:
+    """Уведомить админов, что child-боты не загрузились."""
+    lines = [
+        "<b>❌ bot_master: child-боты не загружены</b>",
+        "",
+        f"Активных в реестре: <b>{load_result.active_rows}</b>",
+        "",
+        "<b>Ошибки:</b>",
+    ]
+    for error in load_result.errors[:15]:
+        lines.append(f"• {escape(error)}")
+    if len(load_result.errors) > 15:
+        lines.append(f"… и ещё {len(load_result.errors) - 15}")
+    if not load_result.errors:
+        lines.append("• (подробности в journalctl -u botmaster)")
+    lines.extend(
+        [
+            "",
+            "Проверьте <code>RECIPIENTS_DB_DIR</code>, "
+            "<code>db_path</code> в recipient_bots и <code>encryption.key</code>.",
+        ]
+    )
+    admin_ids = set(RunnerConfig.CONTROL_ADMIN_IDS)
+    for admin_id in admin_ids:
+        try:
+            await control_bot.send_message(admin_id, "\n".join(lines), parse_mode="HTML")
+        except TelegramAPIError as exc:
+            logger.warning(
+                "Не удалось отправить алерт загрузки админу %s: %s",
+                admin_id,
+                exc,
+            )
 
 
 async def _notify_startup(
@@ -221,101 +259,112 @@ async def main() -> None:
         RunnerConfig.validate()
         _setup_logging()
 
-        instances = await BotRegistry.load()
+        load_result = await BotRegistry.load()
+        instances = load_result.instances
 
-        for inst in instances:
-            db = Database(inst.db_path)
-            await db.connect()
-            await create_tables(db)
-            db_map[inst.bot.id] = db
+        if instances:
+            for inst in instances:
+                db = Database(inst.db_path)
+                await db.connect()
+                await create_tables(db)
+                db_map[inst.bot.id] = db
 
-            scheduler = MailingScheduler(inst.bot, db)
-            schedulers.append(scheduler)
-            await scheduler.start()
+                scheduler = MailingScheduler(inst.bot, db)
+                schedulers.append(scheduler)
+                await scheduler.start()
 
-        _print_healthcheck(instances, db_map)
+            _print_healthcheck(instances, db_map)
 
-        storage = MemoryStorage()
-        dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.CHAT)
+            storage = MemoryStorage()
+            dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.CHAT)
 
-        errors_router = Router(name="errors")
+            errors_router = Router(name="errors")
 
-        @errors_router.error()
-        async def on_bot_blocked_error(event: ErrorEvent, bot: Bot) -> None:
-            exc = event.exception
-            if not isinstance(exc, TelegramAPIError):
-                raise exc
-            msg = (getattr(exc, "message", None) or str(exc) or "").lower()
-            if "blocked" not in msg and "forbidden" not in msg and "deactivated" not in msg:
-                raise exc
+            @errors_router.error()
+            async def on_bot_blocked_error(event: ErrorEvent, bot: Bot) -> None:
+                exc = event.exception
+                if not isinstance(exc, TelegramAPIError):
+                    raise exc
+                msg = (getattr(exc, "message", None) or str(exc) or "").lower()
+                if "blocked" not in msg and "forbidden" not in msg and "deactivated" not in msg:
+                    raise exc
 
-            db = db_map.get(bot.id)
-            if db is None:
-                raise exc
+                db = db_map.get(bot.id)
+                if db is None:
+                    raise exc
 
-            user_id = None
-            update = event.update
-            if update.message and update.message.chat.type == "private":
-                user_id = update.message.chat.id
-            elif update.callback_query and update.callback_query.message:
-                user_id = update.callback_query.message.chat.id
+                user_id = None
+                update = event.update
+                if update.message and update.message.chat.type == "private":
+                    user_id = update.message.chat.id
+                elif update.callback_query and update.callback_query.message:
+                    user_id = update.callback_query.message.chat.id
 
-            if user_id:
-                try:
-                    user_repo = UserRepository(db)
-                    await user_repo.update_user_is_in_bot(user_id, False)
-                    logger.info("Пользователь %s заблокировал бота, is_in_bot=0", user_id)
-                except Exception as exc_inner:
-                    logger.warning(
-                        "Не удалось обновить is_in_bot для %s: %s",
-                        user_id,
-                        exc_inner,
-                    )
+                if user_id:
+                    try:
+                        user_repo = UserRepository(db)
+                        await user_repo.update_user_is_in_bot(user_id, False)
+                        logger.info("Пользователь %s заблокировал бота, is_in_bot=0", user_id)
+                    except Exception as exc_inner:
+                        logger.warning(
+                            "Не удалось обновить is_in_bot для %s: %s",
+                            user_id,
+                            exc_inner,
+                        )
 
-        dp.include_router(errors_router)
+            dp.include_router(errors_router)
 
-        label_map = {inst.bot.id: inst.display_name for inst in instances}
-        bot_label_middleware = BotLabelMiddleware(label_map)
+            label_map = {inst.bot.id: inst.display_name for inst in instances}
+            bot_label_middleware = BotLabelMiddleware(label_map)
 
-        db_middleware = MultiDatabaseMiddleware(db_map)
-        action_logger = ActionLoggerMiddleware()
+            db_middleware = MultiDatabaseMiddleware(db_map)
+            action_logger = ActionLoggerMiddleware()
 
-        for middleware in (bot_label_middleware, db_middleware, action_logger):
-            dp.message.middleware(middleware)
-            dp.callback_query.middleware(middleware)
-            dp.my_chat_member.middleware(middleware)
-            dp.chat_join_request.middleware(middleware)
+            for middleware in (bot_label_middleware, db_middleware, action_logger):
+                dp.message.middleware(middleware)
+                dp.callback_query.middleware(middleware)
+                dp.my_chat_member.middleware(middleware)
+                dp.chat_join_request.middleware(middleware)
 
-        dp.include_router(common_router.router)
-        dp.include_router(user_router.router)
+            dp.include_router(common_router.router)
+            dp.include_router(user_router.router)
 
-        admin_middleware = AdminMiddleware()
-        admin_router.router.message.middleware(admin_middleware)
-        admin_router.router.callback_query.middleware(admin_middleware)
-        dp.include_router(admin_router.router)
+            admin_middleware = AdminMiddleware()
+            admin_router.router.message.middleware(admin_middleware)
+            admin_router.router.callback_query.middleware(admin_middleware)
+            dp.include_router(admin_router.router)
 
-        bots = [inst.bot for inst in instances]
+        elif not RunnerConfig.control_bot_enabled():
+            summary = "; ".join(load_result.errors[:3]) or "неизвестная ошибка"
+            raise RuntimeError(
+                f"Не удалось загрузить ни одного child-бота из "
+                f"{load_result.active_rows} активных. {summary}"
+            )
 
         _register_shutdown_signals(shutdown_event)
 
-        polling_tasks.append(
-            asyncio.create_task(
-                dp.start_polling(
-                    *bots,
-                    allowed_updates=ALLOWED_UPDATES,
-                    handle_signals=False,
-                    close_bot_session=False,
-                ),
-                name="child_polling",
+        if instances:
+            polling_tasks.append(
+                asyncio.create_task(
+                    dp.start_polling(
+                        *[inst.bot for inst in instances],
+                        allowed_updates=ALLOWED_UPDATES,
+                        handle_signals=False,
+                        close_bot_session=False,
+                    ),
+                    name="child_polling",
+                )
             )
-        )
 
         if RunnerConfig.control_bot_enabled():
             status_service = BotStatusService(instances=instances)
             control_bot = _create_control_bot()
             dp_control = _setup_control_dispatcher(status_service)
 
-            await _notify_startup(status_service, control_bot)
+            if instances:
+                await _notify_startup(status_service, control_bot)
+            else:
+                await _notify_load_failure(control_bot, load_result)
 
             polling_tasks.append(
                 asyncio.create_task(
@@ -328,15 +377,22 @@ async def main() -> None:
                     name="control_polling",
                 )
             )
-            polling_tasks.append(
-                asyncio.create_task(
-                    _status_monitor_loop(status_service, control_bot, stop_event),
-                    name="status_monitor",
+            if instances:
+                polling_tasks.append(
+                    asyncio.create_task(
+                        _status_monitor_loop(status_service, control_bot, stop_event),
+                        name="status_monitor",
+                    )
                 )
-            )
             logger.info("Control bot включён, админов: %d", len(RunnerConfig.CONTROL_ADMIN_IDS))
 
-        logger.info("bot_master запущен, polling %d child-ботов", len(bots))
+        if instances:
+            logger.info("bot_master запущен, polling %d child-ботов", len(instances))
+        else:
+            logger.warning(
+                "bot_master запущен без child-ботов "
+                "(только control bot, ожидание исправления конфигурации)"
+            )
 
         shutdown_waiter = asyncio.create_task(shutdown_event.wait(), name="shutdown_waiter")
         polling_tasks.append(shutdown_waiter)

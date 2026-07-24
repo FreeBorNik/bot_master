@@ -1,9 +1,18 @@
 """Модели реестра child-ботов."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from aiogram import Bot
+
+
+@dataclass
+class RegistryLoadResult:
+    """Результат загрузки child-ботов из recipient_bots."""
+
+    instances: list["BotInstance"] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    active_rows: int = 0
 
 
 @dataclass

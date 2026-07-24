@@ -33,6 +33,7 @@ cp .env.example .env
 | `LOG_LEVEL` | INFO / DEBUG |
 | `LOG_FILE` | Путь к файлу логов |
 | `MAILING_DELAY` | Задержка локальных рассылок (сек) |
+| `ADMIN_IDS` | Telegram user_id админов child-ботов (через запятую). При старте попадают в `admins` каждой child DB. Если пусто — используется `CONTROL_ADMIN_IDS` |
 | `CONTROL_BOT_TOKEN` | Опционально: токен control bot для мониторинга |
 | `CONTROL_ADMIN_IDS` | Telegram user_id админов control bot (через запятую) |
 | `CONTROL_STATUS_INTERVAL` | Интервал проверки статуса, сек (0 = без авто-проверки, default 300) |
@@ -68,9 +69,9 @@ sudo systemctl status bot_master
 
 ## Добавление нового child-бота
 
-1. Зарегистрировать бота в `bot_sender` (recipients).
-2. Убедиться, что child SQLite содержит таблицу `admins` с ID администраторов.
-3. Перезапустить `bot_master`: `sudo systemctl restart bot_master`.
+1. Зарегистрировать бота в `bot_sender` (раздел «Боты-получатели»). Путь к child SQLite (`db_path`) генерируется автоматически, например `jobster_bot_7123456789.db`.
+2. Убедиться, что в `.env` заданы `ADMIN_IDS` или `CONTROL_ADMIN_IDS`.
+3. Перезапустить `bot_master`: `sudo systemctl restart bot_master`. При старте создаётся файл БД, накатывается схема и в `admins` добавляются ID из env.
 
 ## Чеклист тестирования
 
@@ -81,7 +82,7 @@ sudo systemctl status bot_master
 | Рассылка из bot_sender | Работает как раньше |
 | MailingScheduler (локальная рассылка) | Каждый scheduler шлёт только своим users |
 | Блокировка бота | `is_in_bot=0` только в DB этого бота |
-| Новый бот в recipient_bots | После restart появляется в healthcheck |
+| Новый бот в recipient_bots | После restart появляется в healthcheck; `.db` создаётся автоматически |
 
 ## Логи
 

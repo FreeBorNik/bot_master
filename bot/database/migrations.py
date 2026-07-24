@@ -1,4 +1,5 @@
 """Миграции базы данных."""
+from bot.config import RunnerConfig
 from bot.database.db import Database
 from bot.utils.logger import setup_logger
 
@@ -327,3 +328,32 @@ async def create_tables(db: Database) -> None:
         pass  # Индексы уже существуют
     
     logger.info("Таблицы базы данных созданы успешно")
+
+    await init_admins(db)
+
+
+async def init_admins(db: Database) -> None:
+    """Добавить админов из env в таблицу admins (INSERT IF NOT EXISTS)."""
+    admin_ids = RunnerConfig.child_admin_ids()
+    if not admin_ids:
+        return
+
+    for admin_id in admin_ids:
+        try:
+            existing = await db.fetchone(
+                "SELECT user_id FROM admins WHERE user_id = ?",
+                (admin_id,),
+            )
+            if not existing:
+                await db.execute(
+                    "INSERT INTO admins (user_id) VALUES (?)",
+                    (admin_id,),
+                )
+                logger.info("Администратор %s добавлен в БД %s", admin_id, db.db_path)
+        except Exception as exc:
+            logger.error(
+                "Ошибка при добавлении администратора %s в %s: %s",
+                admin_id,
+                db.db_path,
+                exc,
+            )

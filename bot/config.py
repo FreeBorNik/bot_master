@@ -27,7 +27,16 @@ class RunnerConfig:
         for x in _control_admin_ids.split(",")
         if x.strip().isdigit()
     )
+    _admin_ids: str = os.getenv("ADMIN_IDS", "").strip()
+    ADMIN_IDS: frozenset[int] = frozenset(
+        int(x.strip()) for x in _admin_ids.split(",") if x.strip().isdigit()
+    )
     CONTROL_STATUS_INTERVAL: int = int(os.getenv("CONTROL_STATUS_INTERVAL", "300"))
+
+    @classmethod
+    def child_admin_ids(cls) -> frozenset[int]:
+        """ID админов для таблицы admins в child SQLite."""
+        return cls.ADMIN_IDS or cls.CONTROL_ADMIN_IDS
 
     @classmethod
     def control_bot_enabled(cls) -> bool:
