@@ -57,11 +57,20 @@ bot_master/
 
 ### Поток данных
 
-1. Старт → `RunnerConfig.validate()` → `BotRegistry.load()` из `recipient_bots WHERE is_active=1`
+1. Старт → `RunnerConfig.validate()` → `BotRegistry.load()` из `recipient_bots WHERE is_active=1 AND runner='bot_master'`
 2. Для каждого бота: расшифровка токена, `Database(child_db_path)`, `create_tables()`, `MailingScheduler`
 3. Один `Dispatcher` + `MemoryStorage(DefaultKeyBuilder(with_bot_id=True))` — изоляция FSM по bot_id
 4. `dp.start_polling(*bots)` — все child-боты в одном event loop
 5. `MultiDatabaseMiddleware` кладёт `data["db"]` по `bot.id`
+
+### runner в recipient_bots
+
+| Значение | Рассылки bot_sender | Polling bot_master |
+|----------|---------------------|--------------------|
+| `bot_master` (default) | да | да |
+| `external` | да | нет (свой процесс) |
+
+Нельзя два polling на один токен. После смены runner — restart bot_master.
 
 ### Что НЕ хранится в bot_master
 

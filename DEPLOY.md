@@ -70,8 +70,9 @@ sudo systemctl status bot_master
 ## Добавление нового child-бота
 
 1. Зарегистрировать бота в `bot_sender` (раздел «Боты-получатели»). Путь к child SQLite (`db_path`) генерируется автоматически, например `jobster_bot_7123456789.db`.
-2. Убедиться, что в `.env` заданы `ADMIN_IDS` или `CONTROL_ADMIN_IDS`.
-3. Перезапустить `bot_master`: `sudo systemctl restart bot_master`. При старте создаётся файл БД, накатывается схема и в `admins` добавляются ID из env.
+2. По умолчанию `runner=bot_master` — бот попадёт в polling. Если у бота другой функционал (свой процесс), в меню recipients → **Runner (master/external)** поставить `external`: останется в рассылках, но `bot_master` его не поднимет.
+3. Убедиться, что в `.env` заданы `ADMIN_IDS` или `CONTROL_ADMIN_IDS`.
+4. Перезапустить `bot_master`: `sudo systemctl restart bot_master`. При старте создаётся файл БД, накатывается схема и в `admins` добавляются ID из env.
 
 ## Чеклист тестирования
 
@@ -82,7 +83,8 @@ sudo systemctl status bot_master
 | Рассылка из bot_sender | Работает как раньше |
 | MailingScheduler (локальная рассылка) | Каждый scheduler шлёт только своим users |
 | Блокировка бота | `is_in_bot=0` только в DB этого бота |
-| Новый бот в recipient_bots | После restart появляется в healthcheck; `.db` создаётся автоматически |
+| Новый бот в recipient_bots (`runner=bot_master`) | После restart появляется в healthcheck; `.db` создаётся автоматически |
+| Бот с `runner=external` | В healthcheck bot_master нет; рассылки из sender работают |
 
 ## Логи
 

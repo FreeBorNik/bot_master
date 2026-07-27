@@ -18,7 +18,7 @@ from aiogram.fsm.strategy import FSMStrategy
 from aiogram.types import ErrorEvent
 
 try:
-    from aiogram.client.default import DefaultBotProperties
+    from aiogram.client.default import DefaultBotProperties 
 except ModuleNotFoundError:
     DefaultBotProperties = None  # aiogram < 3.2
 
