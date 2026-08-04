@@ -336,8 +336,13 @@ async def init_admins(db: Database) -> None:
     """Добавить админов из env в таблицу admins (INSERT IF NOT EXISTS)."""
     admin_ids = RunnerConfig.child_admin_ids()
     if not admin_ids:
+        logger.warning(
+            "Список админов пуст (ADMIN_IDS/CONTROL_ADMIN_IDS) — пропуск для %s",
+            db.db_path,
+        )
         return
 
+    added = 0
     for admin_id in admin_ids:
         try:
             existing = await db.fetchone(
@@ -349,6 +354,7 @@ async def init_admins(db: Database) -> None:
                     "INSERT INTO admins (user_id) VALUES (?)",
                     (admin_id,),
                 )
+                added += 1
                 logger.info("Администратор %s добавлен в БД %s", admin_id, db.db_path)
         except Exception as exc:
             logger.error(
@@ -357,3 +363,10 @@ async def init_admins(db: Database) -> None:
                 db.db_path,
                 exc,
             )
+
+    if added == 0:
+        logger.debug(
+            "Админы уже синхронизированы (%d id) в %s",
+            len(admin_ids),
+            db.db_path,
+        )

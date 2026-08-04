@@ -65,10 +65,10 @@ bot_master/
 
 ### runner в recipient_bots
 
-| Значение | Рассылки bot_sender | Polling bot_master |
-|----------|---------------------|--------------------|
-| `bot_master` (default) | да | да |
-| `external` | да | нет (свой процесс) |
+| Значение | Рассылки bot_sender | Polling bot_master | Упаковка |
+|----------|---------------------|--------------------|----------|
+| `bot_master` (default) | да | да | да |
+| `external` | да | нет (свой процесс) | нет |
 
 Нельзя два polling на один токен. После смены runner — restart bot_master.
 

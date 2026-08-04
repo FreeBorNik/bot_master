@@ -258,6 +258,10 @@ async def main() -> None:
     try:
         RunnerConfig.validate()
         _setup_logging()
+        logger.info(
+            "Child-админы из env (ADMIN_IDS∪CONTROL_ADMIN_IDS): %s",
+            sorted(RunnerConfig.child_admin_ids()),
+        )
 
         load_result = await BotRegistry.load()
         instances = load_result.instances

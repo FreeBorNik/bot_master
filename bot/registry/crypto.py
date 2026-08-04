@@ -12,8 +12,10 @@ class TokenDecryptor:
     """Расшифровка токенов по ключу bot_sender."""
 
     def __init__(self, key_file: Path) -> None:
-        if not key_file.exists():
-            raise FileNotFoundError(f"Ключ шифрования не найден: {key_file}")
+        if not key_file.is_file():
+            raise FileNotFoundError(
+                f"Ключ шифрования не найден или это не файл: {key_file}"
+            )
         key = key_file.read_bytes()
         self._cipher = Fernet(key)
         logger.info("Ключ шифрования загружен из %s", key_file)
